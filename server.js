@@ -6,22 +6,39 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json());
+// ---------- CORS – allow your Vercel frontend ----------
+// ✅ Add your actual Vercel URLs here (or use a dynamic check)
+const allowedOrigins = [
+    'https://we-theta-eight.vercel.app',
+    'https://we-pvj1fe3xn-acemk.vercel.app',
+    // add any custom domain you might use later
+];
+
 app.use(cors({
-    origin: true, // allow your frontend domain
-    credentials: true
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true   // ✅ allow cookies
 }));
 
-// Session management (stores token server-side)
+app.use(express.json());
+
+// ---------- Session – secure cross-origin cookies ----------
 app.use(session({
-    secret: 'replace-this-with-a-strong-secret-in-production',
+    secret: process.env.SESSION_SECRET || 'fallback-secret-change-me',
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false, // set to true if you use HTTPS (Render provides HTTPS)
+        secure: true,          // ✅ must be true on HTTPS
         httpOnly: true,
-        maxAge: 3600000 // 1 hour
+        sameSite: 'none',      // ✅ required for cross-site requests
+        maxAge: 3600000        // 1 hour
     }
 }));
 
@@ -34,7 +51,6 @@ app.post('/api/login', async (req, res) => {
     }
 
     try {
-        // Call WeLearn's official token endpoint
         const response = await axios.get('https://welearn.iiserkol.ac.in/login/token.php', {
             params: {
                 username: username,
@@ -46,10 +62,8 @@ app.post('/api/login', async (req, res) => {
         const token = response.data.token;
 
         if (token) {
-            // Store token in the session (never send it to the frontend)
             req.session.moodleToken = token;
             req.session.username = username;
-
             return res.json({
                 success: true,
                 message: 'Authentication successful'
@@ -69,8 +83,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// ---------- (OPTIONAL) PROXY FOR FETCHING COURSES ----------
-// You can expand this later to fetch courses, assignments, etc.
+// ---------- FETCH COURSES (with dynamic userid) ----------
 app.get('/api/courses', async (req, res) => {
     const token = req.session.moodleToken;
     if (!token) {
@@ -78,21 +91,38 @@ app.get('/api/courses', async (req, res) => {
     }
 
     try {
-        const response = await axios.post('https://welearn.iiserkol.ac.in/webservice/rest/server.php', null, {
+        // Get userid dynamically
+        const siteInfo = await axios.post('https://welearn.iiserkol.ac.in/webservice/rest/server.php', null, {
+            params: {
+                wstoken: token,
+                wsfunction: 'core_webservice_get_site_info',
+                moodlewsrestformat: 'json'
+            }
+        });
+        const userid = siteInfo.data.userid;
+
+        // Fetch courses
+        const courses = await axios.post('https://welearn.iiserkol.ac.in/webservice/rest/server.php', null, {
             params: {
                 wstoken: token,
                 wsfunction: 'core_enrol_get_users_courses',
                 moodlewsrestformat: 'json',
-                userid: 2 // You need to get the actual userid from a separate call
+                userid: userid
             }
         });
-        res.json(response.data);
+        res.json(courses.data);
     } catch (error) {
+        console.error('Error fetching courses:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to fetch courses' });
     }
 });
 
-// Start the server
+// ---------- LOGOUT ----------
+app.post('/api/logout', (req, res) => {
+    req.session.destroy();
+    res.json({ success: true });
+});
+
 app.listen(PORT, () => {
     console.log(`WeLearn proxy running on port ${PORT}`);
 });
